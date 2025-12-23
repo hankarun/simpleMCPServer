@@ -165,40 +165,139 @@ customMCP/
 
 ## Extending the Server
 
-To add custom tools:
+### Adding Custom Tools
 
-1. Add your tool definition in `handle_tools_list()`:
+The server uses a `Tool` class system that makes it easy to add new tools. Here's how:
+
+#### 1. Create a new Tool class
+
+Inherit from the `Tool` base class and implement the required methods:
+
 ```cpp
-{
-    {"name", "my_tool"},
-    {"description", "Description of my tool"},
-    {"inputSchema", {
-        {"type", "object"},
-        {"properties", {
-            {"param1", {
-                {"type", "string"},
-                {"description", "Parameter description"}
-            }}
-        }},
-        {"required", json::array({"param1"})}
-    }}
+class MyCustomTool : public Tool {
+public:
+    std::string getName() const override {
+        return "my_custom_tool";
+    }
+    
+    std::string getDescription() const override {
+        return "Description of what your tool does";
+    }
+    
+    std::vector<ToolProperty> getProperties() const override {
+        return {
+            // ToolProperty(name, type, description, required)
+            ToolProperty("input", "string", "The input parameter", true),
+            ToolProperty("count", "number", "Optional count", false)
+        };
+    }
+    
+    json execute(const json& arguments) override {
+        // Get arguments
+        std::string input = arguments.value("input", "");
+        int count = arguments.value("count", 1);
+        
+        // Your tool logic here
+        std::string result = "Processed: " + input;
+        
+        // Return result using helper methods
+        return createTextContent(result);
+        
+        // Or for errors:
+        // return createErrorContent("Something went wrong");
+    }
+};
+```
+
+#### 2. Register your tool in main()
+
+```cpp
+int main(int argc, char* argv[]) {
+    // ... existing code ...
+    
+    // Register built-in tools
+    ToolRegistry::instance().registerTool<EchoTool>();
+    
+    // Register your custom tool
+    ToolRegistry::instance().registerTool<MyCustomTool>();
+    
+    // ... rest of main() ...
 }
 ```
 
-2. Add implementation in `handle_tools_call()`:
+### Tool API Reference
+
+#### ToolProperty struct
 ```cpp
-if (tool_name == "my_tool") {
-    std::string param1 = arguments.value("param1", "");
-    // Your tool logic here
-    response["result"] = {
-        {"content", json::array({
-            {
-                {"type", "text"},
-                {"text", "Result: " + result}
-            }
-        })}
-    };
-}
+ToolProperty(
+    const std::string& name,        // Parameter name
+    const std::string& type,        // JSON type: "string", "number", "boolean", "object", "array"
+    const std::string& description, // Description for the client
+    bool required = false           // Whether the parameter is required
+);
+```
+
+#### Tool base class methods
+
+| Method | Description |
+|--------|-------------|
+| `getName()` | Returns the unique tool name |
+| `getDescription()` | Returns a description of the tool |
+| `getProperties()` | Returns vector of input schema properties |
+| `execute(json)` | Executes the tool and returns result |
+| `createTextContent(string)` | Helper to create text response |
+| `createErrorContent(string)` | Helper to create error response |
+
+#### ToolRegistry methods
+
+| Method | Description |
+|--------|-------------|
+| `instance()` | Get the singleton registry instance |
+| `registerTool<T>()` | Register a tool by class type |
+| `registerTool(shared_ptr)` | Register a tool instance |
+| `getTool(name)` | Get a tool by name |
+| `hasTool(name)` | Check if a tool exists |
+| `getAllTools()` | Get all registered tools |
+
+### Example: Calculator Tool
+
+```cpp
+class CalculatorTool : public Tool {
+public:
+    std::string getName() const override {
+        return "calculator";
+    }
+    
+    std::string getDescription() const override {
+        return "Performs basic arithmetic operations";
+    }
+    
+    std::vector<ToolProperty> getProperties() const override {
+        return {
+            ToolProperty("operation", "string", "Operation: add, subtract, multiply, divide", true),
+            ToolProperty("a", "number", "First operand", true),
+            ToolProperty("b", "number", "Second operand", true)
+        };
+    }
+    
+    json execute(const json& arguments) override {
+        std::string op = arguments.value("operation", "");
+        double a = arguments.value("a", 0.0);
+        double b = arguments.value("b", 0.0);
+        double result;
+        
+        if (op == "add") result = a + b;
+        else if (op == "subtract") result = a - b;
+        else if (op == "multiply") result = a * b;
+        else if (op == "divide") {
+            if (b == 0) return createErrorContent("Division by zero");
+            result = a / b;
+        }
+        else return createErrorContent("Unknown operation: " + op);
+        
+        return createTextContent(std::to_string(result));
+    }
+};
 ```
 
 ## Development

@@ -3,6 +3,7 @@
 #include <memory>
 #include <sstream>
 #include <unordered_map>
+#include <functional>
 #include <nlohmann/json.hpp>
 #include <asio.hpp>
 
@@ -29,6 +30,227 @@ std::string url_decode(const std::string& str) {
     }
     return result;
 }
+
+// ============================================================================
+// Tool System
+// ============================================================================
+
+/**
+ * @brief Represents a property in the tool's input schema
+ */
+struct ToolProperty {
+    std::string name;
+    std::string type;
+    std::string description;
+    bool required = false;
+    
+    ToolProperty(const std::string& n, const std::string& t, const std::string& d, bool req = false)
+        : name(n), type(t), description(d), required(req) {}
+};
+
+/**
+ * @brief Base class for MCP tools
+ * 
+ * To create a new tool, inherit from this class and implement:
+ * - getName(): Return the tool's unique name
+ * - getDescription(): Return a description of what the tool does
+ * - getProperties(): Return the input schema properties
+ * - execute(): Implement the tool's logic
+ */
+class Tool {
+public:
+    virtual ~Tool() = default;
+    
+    /**
+     * @brief Get the unique name of the tool
+     */
+    virtual std::string getName() const = 0;
+    
+    /**
+     * @brief Get a description of what the tool does
+     */
+    virtual std::string getDescription() const = 0;
+    
+    /**
+     * @brief Get the input schema properties for the tool
+     */
+    virtual std::vector<ToolProperty> getProperties() const = 0;
+    
+    /**
+     * @brief Execute the tool with the given arguments
+     * @param arguments JSON object containing the tool arguments
+     * @return JSON result to be sent back to the client
+     */
+    virtual json execute(const json& arguments) = 0;
+    
+    /**
+     * @brief Generate the JSON schema for tools/list response
+     */
+    json getSchema() const {
+        json properties = json::object();
+        json required_props = json::array();
+        
+        for (const auto& prop : getProperties()) {
+            properties[prop.name] = {
+                {"type", prop.type},
+                {"description", prop.description}
+            };
+            if (prop.required) {
+                required_props.push_back(prop.name);
+            }
+        }
+        
+        return {
+            {"name", getName()},
+            {"description", getDescription()},
+            {"inputSchema", {
+                {"type", "object"},
+                {"properties", properties},
+                {"required", required_props}
+            }}
+        };
+    }
+    
+protected:
+    /**
+     * @brief Helper to create a text content response
+     */
+    static json createTextContent(const std::string& text) {
+        return {
+            {"content", json::array({
+                {
+                    {"type", "text"},
+                    {"text", text}
+                }
+            })}
+        };
+    }
+    
+    /**
+     * @brief Helper to create an error response
+     */
+    static json createErrorContent(const std::string& error) {
+        return {
+            {"content", json::array({
+                {
+                    {"type", "text"},
+                    {"text", "Error: " + error}
+                }
+            })},
+            {"isError", true}
+        };
+    }
+};
+
+/**
+ * @brief Registry for managing MCP tools
+ * 
+ * Use this class to register tools and retrieve them by name.
+ * This is a singleton - use ToolRegistry::instance() to access it.
+ */
+class ToolRegistry {
+public:
+    static ToolRegistry& instance() {
+        static ToolRegistry registry;
+        return registry;
+    }
+    
+    /**
+     * @brief Register a tool with the registry
+     * @param tool Shared pointer to the tool instance
+     */
+    void registerTool(std::shared_ptr<Tool> tool) {
+        tools_[tool->getName()] = tool;
+        std::cout << "Registered tool: " << tool->getName() << std::endl;
+    }
+    
+    /**
+     * @brief Register a tool by creating it in place
+     * @tparam T The tool class type
+     * @tparam Args Constructor argument types
+     * @param args Constructor arguments
+     */
+    template<typename T, typename... Args>
+    void registerTool(Args&&... args) {
+        auto tool = std::make_shared<T>(std::forward<Args>(args)...);
+        registerTool(tool);
+    }
+    
+    /**
+     * @brief Get a tool by name
+     * @param name The tool name
+     * @return Shared pointer to the tool, or nullptr if not found
+     */
+    std::shared_ptr<Tool> getTool(const std::string& name) const {
+        auto it = tools_.find(name);
+        if (it != tools_.end()) {
+            return it->second;
+        }
+        return nullptr;
+    }
+    
+    /**
+     * @brief Check if a tool exists
+     */
+    bool hasTool(const std::string& name) const {
+        return tools_.find(name) != tools_.end();
+    }
+    
+    /**
+     * @brief Get all registered tools
+     */
+    const std::unordered_map<std::string, std::shared_ptr<Tool>>& getAllTools() const {
+        return tools_;
+    }
+    
+    /**
+     * @brief Get the JSON array of all tool schemas for tools/list
+     */
+    json getToolsList() const {
+        json tools_array = json::array();
+        for (const auto& [name, tool] : tools_) {
+            tools_array.push_back(tool->getSchema());
+        }
+        return tools_array;
+    }
+    
+private:
+    ToolRegistry() = default;
+    std::unordered_map<std::string, std::shared_ptr<Tool>> tools_;
+};
+
+// ============================================================================
+// Built-in Tools
+// ============================================================================
+
+/**
+ * @brief Echo tool - echoes back the input text
+ */
+class EchoTool : public Tool {
+public:
+    std::string getName() const override {
+        return "echo";
+    }
+    
+    std::string getDescription() const override {
+        return "Echoes back the input text";
+    }
+    
+    std::vector<ToolProperty> getProperties() const override {
+        return {
+            ToolProperty("text", "string", "Text to echo back", true)
+        };
+    }
+    
+    json execute(const json& arguments) override {
+        std::string text = arguments.value("text", "");
+        return createTextContent("Echo: " + text);
+    }
+};
+
+// ============================================================================
+// MCP Session and Server
+// ============================================================================
 
 class MCPSession : public std::enable_shared_from_this<MCPSession> {
 public:
@@ -262,22 +484,7 @@ private:
         json response = {
             {"jsonrpc", "2.0"},
             {"result", {
-                {"tools", json::array({
-                    {
-                        {"name", "echo"},
-                        {"description", "Echoes back the input text"},
-                        {"inputSchema", {
-                            {"type", "object"},
-                            {"properties", {
-                                {"text", {
-                                    {"type", "string"},
-                                    {"description", "Text to echo back"}
-                                }}
-                            }},
-                            {"required", json::array({"text"})}
-                        }}
-                    }
-                })}
+                {"tools", ToolRegistry::instance().getToolsList()}
             }}
         };
         
@@ -302,18 +509,15 @@ private:
             response["id"] = request["id"];
         }
 
-        if (tool_name == "echo") {
-            std::string text = arguments.value("text", "");
-            response["result"] = {
-                {"content", json::array({
-                    {
-                        {"type", "text"},
-                        {"text", "Echo: " + text}
-                    }
-                })}
-            };
+        auto tool = ToolRegistry::instance().getTool(tool_name);
+        if (tool) {
+            try {
+                response["result"] = tool->execute(arguments);
+            } catch (const std::exception& e) {
+                return create_error_response(request, -32603, std::string("Tool execution error: ") + e.what());
+            }
         } else {
-            return create_error_response(request, -32602, "Unknown tool");
+            return create_error_response(request, -32602, "Unknown tool: " + tool_name);
         }
 
         return response;
@@ -442,10 +646,17 @@ int main(int argc, char* argv[]) {
             port = static_cast<short>(std::atoi(argv[1]));
         }
 
+        // Register built-in tools
+        ToolRegistry::instance().registerTool<EchoTool>();
+        
+        // Example: Register custom tools here
+        // ToolRegistry::instance().registerTool<MyCustomTool>();
+
         asio::io_context io_context;
         MCPServer server(io_context, port);
         
         std::cout << "MCP Server running on port " << port << std::endl;
+        std::cout << "Registered " << ToolRegistry::instance().getAllTools().size() << " tool(s)" << std::endl;
         io_context.run();
     } catch (std::exception& e) {
         std::cerr << "Exception: " << e.what() << std::endl;
