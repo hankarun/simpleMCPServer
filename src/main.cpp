@@ -646,12 +646,8 @@ int main(int argc, char* argv[]) {
             port = static_cast<short>(std::atoi(argv[1]));
         }
 
-        // Register built-in tools
         ToolRegistry::instance().registerTool<EchoTool>();
         
-        // Example: Register custom tools here
-        // ToolRegistry::instance().registerTool<MyCustomTool>();
-
         asio::io_context io_context;
         MCPServer server(io_context, port);
         
